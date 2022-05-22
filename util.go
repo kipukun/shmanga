@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -60,4 +61,13 @@ func post[T any](url string, v url.Values) (T, error) {
 	}
 
 	return ret, nil
+}
+
+func path(ss ...string) string {
+	var b strings.Builder
+	for _, s := range ss {
+		b.WriteString(s)
+		b.WriteByte('/')
+	}
+	return strings.TrimSuffix(b.String(), "/")
 }
