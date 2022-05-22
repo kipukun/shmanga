@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -197,8 +198,19 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 				case sem <- struct{}{}:
 				}
 
+				defer func() {
+					<-sem
+				}()
+
 				u := fmt.Sprintf(coversImgFmt, uuid, s)
 				log.Println("getting", u)
+
+				split := strings.Split(u, ".")
+				if len(split) != 4 {
+					errs <- fmt.Errorf("malformed url:", u)
+				}
+
+				ext := split[3]
 
 				resp, err := c.Get(u)
 				if err != nil {
@@ -215,7 +227,7 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 				defer of.Close()
 
 				zw := zip.NewWriter(bufio.NewWriter(of))
-				zf, err := zw.Create("cover")
+				zf, err := zw.Create("cover." + ext)
 				if err != nil {
 					errs <- err
 					return
@@ -234,8 +246,6 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 				}
 
 				log.Println("created", p)
-
-				<-sem
 			}(cover)
 		}
 
