@@ -13,12 +13,23 @@ jobs:
           - os: ubuntu-latest 
             artifact_name: shmanga
             asset_name: shmanga-linux-amd64
+            goos: linux
+            goarch: amd64
           - os: windows-latest
             artifact_name: shmanga.exe
             asset_name: shmanga-windows-amd64.exe
+            goos: windows
+            goarch: amd64
           - os: macos-latest
             artifact_name: shmanga
             asset_name: shmanga-macos-amd64
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            artifact_name: shmanga
+            asset_name: shmanga-macos-arm64
+            goos: darwin
+            goarch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
@@ -28,6 +39,9 @@ jobs:
           go-version: "^1.18.2"
       - name: Build on ${{ matrix.os }}
         run: go build
+        with:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
       - name: Rename file
         run: mv ${{ matrix.artifact_name }} ${{ matrix.asset_name }}
       - name: Upload ${{ matrix.asset_name }}
