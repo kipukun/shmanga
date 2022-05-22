@@ -134,6 +134,14 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 
 		title, uuid, err := searchManga(rec[0])
 		if err != nil {
+			if errors.Is(err, errNotEnoughResults) {
+				err = csvw.Write([]string{rec[0], ""})
+				if err != nil {
+					return fmt.Errorf("error writing csv: %w", err)
+				}
+				csvw.Flush()
+				continue
+			}
 			return fmt.Errorf("error searching manga on mangadex: %w", err)
 		}
 
