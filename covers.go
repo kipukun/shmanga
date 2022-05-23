@@ -207,7 +207,8 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 
 				split := strings.Split(u, ".")
 				if len(split) != 4 {
-					errs <- fmt.Errorf("malformed url:", u)
+					errs <- fmt.Errorf("malformed url: %q", u)
+					return
 				}
 
 				ext := split[3]
