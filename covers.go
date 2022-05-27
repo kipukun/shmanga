@@ -96,6 +96,45 @@ func getCovers(uuid string) (map[string]string, error) {
 	return covers, nil
 }
 
+func createFile(u, p string) error {
+	split := strings.Split(u, ".")
+	if len(split) != 4 {
+		return fmt.Errorf("malformed url: %q", u)
+	}
+
+	ext := split[3]
+
+	resp, err := c.Get(u)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	of, err := os.Create(p)
+	if err != nil {
+		return err
+	}
+	defer of.Close()
+
+	zw := zip.NewWriter(bufio.NewWriter(of))
+	zf, err := zw.Create("cover." + ext)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(zf, resp.Body)
+	if err != nil {
+		return err
+	}
+
+	err = zw.Close()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir string) error {
 	csvr := csv.NewReader(r)
 	csvw := csv.NewWriter(w)
@@ -195,65 +234,33 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 				select {
 				case <-wctx.Done():
 					return
-				case sem <- struct{}{}:
+				default:
 				}
+
+				sem <- struct{}{}
 
 				defer func() {
 					<-sem
 				}()
 
 				u := fmt.Sprintf(coversImgFmt, uuid, s)
-				log.Println("getting", u)
-
-				split := strings.Split(u, ".")
-				if len(split) != 4 {
-					errs <- fmt.Errorf("malformed url: %q", u)
-					return
-				}
-
-				ext := split[3]
-
-				resp, err := c.Get(u)
+				err = createFile(u, p)
 				if err != nil {
-					errs <- err
-					return
-				}
-				defer resp.Body.Close()
-
-				of, err := os.Create(p)
-				if err != nil {
-					errs <- err
-					return
-				}
-				defer of.Close()
-
-				zw := zip.NewWriter(bufio.NewWriter(of))
-				zf, err := zw.Create("cover." + ext)
-				if err != nil {
-					errs <- err
-					return
-				}
-
-				_, err = io.Copy(zf, resp.Body)
-				if err != nil {
-					errs <- err
-					return
-				}
-
-				err = zw.Close()
-				if err != nil {
-					errs <- err
-					return
+					select {
+					case <-wctx.Done():
+						return
+					case errs <- err:
+					}
 				}
 
 				log.Println("created", p)
+
 			}(cover)
 		}
 
 	}
 
 	wait := make(chan struct{})
-
 	go func() {
 		wg.Wait()
 		wait <- struct{}{}
