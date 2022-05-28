@@ -42,6 +42,7 @@ func main() {
 	coversCmd := flag.NewFlagSet("covers", flag.ExitOnError)
 	coversFile := coversCmd.String("f", "", "CSV list of manga titles to search for, leave empty for stdin")
 	coversOutput := coversCmd.String("o", "", "location of not found list, leave empty for stdout")
+	coversID := coversCmd.String("id", "", "download covers for this specific manga id")
 	coversDir := coversCmd.String("dir", "", "location to output directories of zip files of covers")
 
 	if len(os.Args) < 2 {
@@ -70,6 +71,11 @@ func main() {
 
 	case "covers":
 		coversCmd.Parse(os.Args[2:])
+
+		if *coversID != "" {
+			fmt.Println(*coversID)
+			return
+		}
 
 		r, w, err := createIO(*coversFile, *coversOutput)
 		if err != nil {

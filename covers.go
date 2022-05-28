@@ -11,10 +11,13 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/kipukun/shmanga/group"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -135,6 +138,66 @@ func createFile(u, p string) error {
 	return nil
 }
 
+type job struct {
+	dir, uuid, title string
+}
+
+func createFileFromJob(ctx context.Context, j job) error {
+	covers, err := getCovers(j.uuid)
+	if err != nil {
+		return fmt.Errorf("error getting covers from mangadex: %w", err)
+	}
+
+	err = os.Mkdir(j.dir, 0750)
+	if err != nil && !os.IsExist(err) {
+		return fmt.Errorf("error creating output dir: %w", err)
+	}
+
+	g := group.New(len(covers))
+	g.Limit(5)
+
+	for volume, cover := range covers {
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if volume == "" {
+			volume = "No Volume"
+		} else {
+			volume = fmt.Sprintf("Volume %s", volume)
+		}
+
+		fname := fmt.Sprintf("%s - %s.zip", j.title, volume)
+		p := filepath.Join(j.dir, fname)
+
+		if _, err := os.Stat(p); err == nil {
+			continue
+		}
+
+		u := fmt.Sprintf(coversImgFmt, j.uuid, cover)
+
+		g.Do(ctx, func() error {
+			err := createFile(u, p)
+			if err != nil {
+				return err
+			}
+			log.Println("created", p)
+			return nil
+		})
+
+	}
+
+	err = g.Wait(ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir string) error {
 	csvr := csv.NewReader(r)
 	csvw := csv.NewWriter(w)
@@ -146,8 +209,6 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 
 	dir = invalidChars.ReplaceAllString(dir, "_")
 
-	ticker := time.NewTicker(time.Second)
-
 	err = os.Mkdir(dir, 0750)
 	if err != nil && !os.IsExist(err) {
 		return fmt.Errorf("error creating output dir: %w", err)
@@ -155,17 +216,14 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 
 	log.Println("created output directory", dir)
 
-	var wg sync.WaitGroup
-	errs := make(chan error)
-	wctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	g, ctx := errgroup.WithContext(ctx)
 
 	for _, rec := range recs {
 
 		select {
-		case <-wctx.Done():
-			return errors.New("context cancelled")
-		case <-ticker.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
 
 		if len(rec) != 1 {
@@ -191,86 +249,36 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 			if err != nil {
 				return fmt.Errorf("error writing csv: %w", err)
 			}
-			csvw.Flush()
 			continue
 		}
 
-		covers, err := getCovers(uuid)
-		if err != nil {
-			return fmt.Errorf("error getting covers from mangadex: %w", err)
-		}
+		log.Printf("getting covers for: %q\n", title)
 
-		cleaned := invalidChars.ReplaceAllString(rec[0], "_")
+		cleanedTitle := invalidChars.ReplaceAllString(rec[0], "_")
 
-		err = os.Mkdir(path(dir, cleaned), 0750)
+		err = os.Mkdir(dir, 0750)
 		if err != nil && !os.IsExist(err) {
 			return fmt.Errorf("error creating output dir: %w", err)
 		}
 
-		sem := make(chan struct{}, 5)
-
-		log.Printf("getting covers for: %q\n", title)
-
-		for volume, cover := range covers {
-
-			if volume == "" {
-				volume = "No Volume"
-			} else {
-				volume = fmt.Sprintf("Volume %s", volume)
-			}
-
-			fname := fmt.Sprintf("%s - %s.zip", title, volume)
-			p := path(dir, cleaned, fname)
-
-			if _, err := os.Stat(p); err == nil {
-				continue
-			}
-
-			wg.Add(1)
-
-			go func(s string) {
-				defer wg.Done()
-
-				select {
-				case <-wctx.Done():
-					return
-				default:
-				}
-
-				sem <- struct{}{}
-
-				defer func() {
-					<-sem
-				}()
-
-				u := fmt.Sprintf(coversImgFmt, uuid, s)
-				err = createFile(u, p)
-				if err != nil {
-					select {
-					case <-wctx.Done():
-						return
-					case errs <- err:
-					}
-				}
-
-				log.Println("created", p)
-
-			}(cover)
+		j := job{
+			title: cleanedTitle,
+			dir:   filepath.Join(dir, cleanedTitle),
+			uuid:  uuid,
 		}
 
+		g.Go(func() error {
+			err := createFileFromJob(ctx, j)
+			if err != nil {
+				return err
+			}
+			return nil
+		})
 	}
 
-	wait := make(chan struct{})
-	go func() {
-		wg.Wait()
-		wait <- struct{}{}
-	}()
-
-	select {
-	case err = <-errs:
-		cancel()
-		return fmt.Errorf("error creating cover zip: %w", err)
-	case <-wait:
+	err = g.Wait()
+	if err != nil {
+		return err
 	}
 
 	csvw.Flush()
