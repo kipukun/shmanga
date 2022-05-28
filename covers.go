@@ -17,12 +17,12 @@ import (
 	"time"
 
 	"github.com/kipukun/shmanga/group"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
 	coverEndpointFmt  = "https://api.mangadex.org/cover?limit=100&order[volume]=asc&manga[]=%s"
 	searchEndpointFmt = "https://api.mangadex.org/manga?title=%s"
+	mangaEndpoint     = "https://api.mangadex.org/manga/%s"
 	coversImgFmt      = "https://uploads.mangadex.org/covers/%s/%s"
 )
 
@@ -69,6 +69,80 @@ type coversResp struct {
 	Total  int `json:"total"`
 }
 
+type mangaResp struct {
+	Result   string `json:"result"`
+	Response string `json:"response"`
+	Data     struct {
+		ID         string `json:"id"`
+		Type       string `json:"type"`
+		Attributes struct {
+			Title struct {
+				En string `json:"en"`
+			} `json:"title"`
+			AltTitles []struct {
+				JaRo string `json:"ja-ro,omitempty"`
+				En   string `json:"en,omitempty"`
+				Ru   string `json:"ru,omitempty"`
+				Th   string `json:"th,omitempty"`
+				Ja   string `json:"ja,omitempty"`
+				Zh   string `json:"zh,omitempty"`
+				Ko   string `json:"ko,omitempty"`
+				Ar   string `json:"ar,omitempty"`
+			} `json:"altTitles"`
+			Description struct {
+				En   string `json:"en"`
+				Pl   string `json:"pl"`
+				PtBr string `json:"pt-br"`
+			} `json:"description"`
+			IsLocked bool `json:"isLocked"`
+			Links    struct {
+				Al    string `json:"al"`
+				Ap    string `json:"ap"`
+				Bw    string `json:"bw"`
+				Kt    string `json:"kt"`
+				Mu    string `json:"mu"`
+				Amz   string `json:"amz"`
+				Cdj   string `json:"cdj"`
+				Ebj   string `json:"ebj"`
+				Mal   string `json:"mal"`
+				Raw   string `json:"raw"`
+				Engtl string `json:"engtl"`
+			} `json:"links"`
+			OriginalLanguage       string `json:"originalLanguage"`
+			LastVolume             string `json:"lastVolume"`
+			LastChapter            string `json:"lastChapter"`
+			PublicationDemographic string `json:"publicationDemographic"`
+			Status                 string `json:"status"`
+			Year                   int    `json:"year"`
+			ContentRating          string `json:"contentRating"`
+			Tags                   []struct {
+				ID         string `json:"id"`
+				Type       string `json:"type"`
+				Attributes struct {
+					Name struct {
+						En string `json:"en"`
+					} `json:"name"`
+					Description []interface{} `json:"description"`
+					Group       string        `json:"group"`
+					Version     int           `json:"version"`
+				} `json:"attributes"`
+				Relationships []interface{} `json:"relationships"`
+			} `json:"tags"`
+			State                          string        `json:"state"`
+			ChapterNumbersResetOnNewVolume bool          `json:"chapterNumbersResetOnNewVolume"`
+			CreatedAt                      time.Time     `json:"createdAt"`
+			UpdatedAt                      time.Time     `json:"updatedAt"`
+			Version                        int           `json:"version"`
+			AvailableTranslatedLanguages   []interface{} `json:"availableTranslatedLanguages"`
+		} `json:"attributes"`
+		Relationships []struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Related string `json:"related,omitempty"`
+		} `json:"relationships"`
+	} `json:"data"`
+}
+
 func searchManga(name string) (title string, uuid string, err error) {
 	enc := url.QueryEscape(name)
 	searchResp, err := get[coversSearchResp](fmt.Sprintf(searchEndpointFmt, enc))
@@ -97,6 +171,15 @@ func getCovers(uuid string) (map[string]string, error) {
 	}
 
 	return covers, nil
+}
+
+func getMangaTitleById(uuid string) (string, error) {
+	resp, err := get[mangaResp](fmt.Sprintf(mangaEndpoint, uuid))
+	if err != nil {
+		return "", err
+	}
+
+	return resp.Data.Attributes.Title.En, nil
 }
 
 func createFile(u, p string) error {
@@ -153,16 +236,10 @@ func createFileFromJob(ctx context.Context, j job) error {
 		return fmt.Errorf("error creating output dir: %w", err)
 	}
 
-	g := group.New(len(covers))
+	g, ctx := group.WithContext(ctx)
 	g.Limit(5)
 
 	for volume, cover := range covers {
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
 
 		if volume == "" {
 			volume = "No Volume"
@@ -198,6 +275,47 @@ func createFileFromJob(ctx context.Context, j job) error {
 	return nil
 }
 
+func createCoversFromIds(ctx context.Context, s string, dir string) error {
+	uuids := strings.Split(s, ",")
+	dir = invalidChars.ReplaceAllString(dir, "_")
+
+	err := os.Mkdir(dir, 0750)
+	if err != nil && !os.IsExist(err) {
+		return fmt.Errorf("error creating output dir: %w", err)
+	}
+	log.Println("created output directory", dir)
+
+	g, ctx := group.WithContext(ctx)
+
+	for _, uuid := range uuids {
+		title, err := getMangaTitleById(uuid)
+		if err != nil {
+			return err
+		}
+
+		j := job{
+			title: title,
+			uuid:  uuid,
+			dir:   filepath.Join(dir, title),
+		}
+
+		g.Do(ctx, func() error {
+			err := createFileFromJob(ctx, j)
+			if err != nil {
+				return err
+			}
+			return nil
+		})
+	}
+
+	err = g.Wait(ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir string) error {
 	csvr := csv.NewReader(r)
 	csvw := csv.NewWriter(w)
@@ -216,15 +334,9 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 
 	log.Println("created output directory", dir)
 
-	g, ctx := errgroup.WithContext(ctx)
+	g, ctx := group.WithContext(ctx)
 
 	for _, rec := range recs {
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
 
 		if len(rec) != 1 {
 			return fmt.Errorf("expected row of length 1, got %d", len(rec))
@@ -267,7 +379,7 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 			uuid:  uuid,
 		}
 
-		g.Go(func() error {
+		g.Do(ctx, func() error {
 			err := createFileFromJob(ctx, j)
 			if err != nil {
 				return err
@@ -276,7 +388,7 @@ func createCoverZips(ctx context.Context, r io.Reader, w io.WriteCloser, dir str
 		})
 	}
 
-	err = g.Wait()
+	err = g.Wait(ctx)
 	if err != nil {
 		return err
 	}

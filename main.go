@@ -42,7 +42,7 @@ func main() {
 	coversCmd := flag.NewFlagSet("covers", flag.ExitOnError)
 	coversFile := coversCmd.String("f", "", "CSV list of manga titles to search for, leave empty for stdin")
 	coversOutput := coversCmd.String("o", "", "location of not found list, leave empty for stdout")
-	coversID := coversCmd.String("id", "", "download covers for this specific manga id")
+	coversID := coversCmd.String("ids", "", "download covers for a list of IDs, comma separated")
 	coversDir := coversCmd.String("dir", "", "location to output directories of zip files of covers")
 
 	if len(os.Args) < 2 {
@@ -72,20 +72,29 @@ func main() {
 	case "covers":
 		coversCmd.Parse(os.Args[2:])
 
+		if *coversDir == "" {
+			log.Fatalln("expected output directory with -dir")
+			return
+		}
+
 		if *coversID != "" {
-			fmt.Println(*coversID)
+			err := createCoversFromIds(ctx, *coversID, *coversDir)
+			if err != nil {
+				log.Fatalln("error creating covers from ids:", err)
+				return
+			}
 			return
 		}
 
 		r, w, err := createIO(*coversFile, *coversOutput)
 		if err != nil {
-			log.Fatalln(err)
+			log.Fatalln("error creating io:", err)
 			return
 		}
 
 		err = createCoverZips(ctx, r, w, *coversDir)
 		if err != nil {
-			log.Fatalln(err)
+			log.Fatalln("error creating cover zips from csv:", err)
 			return
 		}
 	default:
